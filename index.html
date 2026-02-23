@@ -1,0 +1,1916 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Project Timer</title>
+    <!-- Tailwind -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['Roboto Mono', 'monospace'],
+                        display: ['Lobster', 'cursive'],
+                    },
+                    colors: {
+                        bgPrimary: '#0f172a',
+                        bgSecondary: '#1e293b',
+                        textPrimary: '#f8fafc',
+                        textSecondary: '#94a3b8',
+                        borderColor: '#334155',
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=Lobster&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+    
+    <!-- React & ReactDOM (UMD) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel Standalone -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        /* Custom scrollbar styles */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background-color: #334155;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background-color: #4b5a70;
+        }
+        body {
+            background-color: #0f172a;
+            color: #f8fafc;
+            overflow: hidden;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(5px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+    </style>
+<script type="importmap">
+{
+  "imports": {
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.1/",
+    "react/": "https://aistudiocdn.com/react@^19.2.1/",
+    "react": "https://aistudiocdn.com/react@^19.2.1"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel" data-presets="typescript,react">
+        const { useState, useEffect, useMemo, useRef, useLayoutEffect } = React;
+
+        // --- TYPES ---
+        type ProjectStatus = 'current' | 'ready' | 'invoiced';
+
+        interface TimeLogEntry {
+            id: number;
+            date: string; // ISO string
+            method: 'timer' | 'manual';
+            startTime: string; // ISO string
+            endTime: string; // ISO string
+            duration: number; // in seconds
+            manualType?: 'duration' | 'range';
+            logText: string;
+        }
+
+        interface Project {
+            id: number;
+            name: string;
+            notes: string;
+            section: string;
+            subsection: string;
+            createdAt: string; // ISO string
+            timeSpent: number; // in seconds
+            logs: TimeLogEntry[];
+            isExpanded: boolean;
+            color: string;
+            status: ProjectStatus;
+            readyForInvoicingAt: string | null;
+            invoicedAt: string | null;
+        }
+
+        interface CategoryLabels {
+            section: string;
+            subsection: string;
+        }
+
+        interface SearchCriteria {
+            type: 'name' | 'notes' | 'date';
+            query: string;
+            date: string;
+        }
+
+        interface ImportData {
+            projects?: Project[];
+            categoryLabels?: CategoryLabels;
+            globalColor?: string;
+            backgroundColor?: string;
+            websiteName?: string;
+            accentColorHistory?: string[];
+            backgroundColorHistory?: string[];
+        }
+
+        interface ActiveTimer {
+            projectId: number;
+            startTime: number;
+        }
+
+        interface CalendarDay {
+            key: string;
+            isEmpty: boolean;
+            date?: Date;
+        }
+
+        interface MonthData {
+            year: number;
+            month: number;
+            monthName: string;
+            days: CalendarDay[];
+        }
+
+        // --- CONSTANTS ---
+        const LOCAL_STORAGE_KEYS = {
+            PROJECTS: 'project-timer-projects',
+            SECTIONS: 'project-timer-sections',
+            CATEGORY_LABELS: 'project-timer-category-labels',
+            GLOBAL_COLOR: 'project-timer-global-color',
+            BACKGROUND_COLOR: 'project-timer-background-color',
+            ACCENT_COLOR_HISTORY: 'project-timer-accent-color-history',
+            BACKGROUND_COLOR_HISTORY: 'project-timer-bg-color-history',
+            WORK_AREA: 'project-timer-work-area',
+            WEBSITE_NAME: 'project-timer-website-name',
+            EXPANSION_STATE: 'project-timer-expansion-state',
+            SCROLL_POSITION: 'project-timer-scroll-position',
+        };
+
+        const DEFAULT_WEBSITE_NAME = "Project Timer";
+        const DEFAULT_GLOBAL_COLOR = '#14b8a6'; // Teal
+        const DEFAULT_BACKGROUND_COLOR = '#0f172a'; // Dark Blue
+        const DEFAULT_CATEGORY_LABELS = { section: 'Company', subsection: 'Client' };
+        const MAX_COLOR_HISTORY = 10;
+
+        // --- UTILS ---
+        const formatTime = (totalSeconds: number): string => {
+            const hours = Math.floor(totalSeconds / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            const seconds = Math.floor(totalSeconds % 60);
+            return [hours, minutes, seconds]
+                .map(val => val.toString().padStart(2, '0'))
+                .join(':');
+        };
+
+        const formatTimeDecimal = (totalSeconds: number): string => {
+            if (totalSeconds === 0) return '0.00';
+            const hours = totalSeconds / 3600;
+            return hours.toFixed(2);
+        };
+
+        const formatCreationDate = (isoString: string | null): string => {
+            if (!isoString) return '';
+            const date = new Date(isoString);
+            const day = date.getDate();
+            const month = date.toLocaleString('default', { month: 'short' });
+            const year = date.getFullYear();
+            return `${day} ${month} ${year}`;
+        };
+
+        const formatLogDate = (isoString: string) => {
+            const date = new Date(isoString);
+            const day = date.getDay();
+            const isWeekend = (day === 6) || (day === 0);
+            const formattedDate = date.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' });
+            return { formattedDate, isWeekend };
+        };
+
+        const formatLogTime = (isoString: string): string => {
+            const date = new Date(isoString);
+            return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+        };
+
+        const formatDateForInput = (isoString: string): string => {
+            if (!isoString) return '';
+            const date = new Date(isoString);
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        };
+
+        const formatTimeForInput = (isoString: string): string => {
+            if (!isoString) return '';
+            const date = new Date(isoString);
+            const hours = date.getHours().toString().padStart(2, '0');
+            const minutes = date.getMinutes().toString().padStart(2, '0');
+            return `${hours}:${minutes}`;
+        };
+
+        const getMonthData = (yearInput: number, monthInput: number): MonthData => {
+            // Correctly handle normalization by creating a Date object first.
+            // This handles cases where monthInput is -1 (Dec prev year) or 12 (Jan next year)
+            const date = new Date(yearInput, monthInput, 1);
+            
+            // Extract the actual year and month from the normalized date
+            const year = date.getFullYear();
+            const month = date.getMonth();
+
+            const monthName = date.toLocaleString('default', { month: 'long' });
+            const days: CalendarDay[] = [];
+            
+            const dayOfWeek = date.getDay();
+            // Monday start: Sun(0) -> 6, Mon(1) -> 0, etc.
+            const emptyDaysAtStart = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+            
+            for (let i = 0; i < emptyDaysAtStart; i++) {
+                days.push({ key: `empty-start-${year}-${month}-${i}`, isEmpty: true });
+            }
+            
+            while (date.getMonth() === month) {
+                days.push({
+                    key: date.toISOString(),
+                    isEmpty: false,
+                    date: new Date(date),
+                });
+                date.setDate(date.getDate() + 1);
+            }
+            return { year, month, monthName, days };
+        };
+
+        const hexToRgb = (hex: string) => {
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result ? {
+                r: parseInt(result[1], 16),
+                g: parseInt(result[2], 16),
+                b: parseInt(result[3], 16)
+            } : null;
+        };
+
+        const getTextColorForBackground = (hexColor: string) => {
+            const rgb = hexToRgb(hexColor);
+            if (!rgb) return '#f8fafc';
+            const luminance = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
+            return luminance > 0.5 ? '#0f172a' : '#f8fafc';
+        };
+
+        // --- File System & IndexedDB Helpers ---
+        const DB_NAME = 'ProjectTimerDB';
+        const STORE_NAME = 'dirHandles';
+        const DB_VERSION = 1;
+
+        const openDB = () => {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(DB_NAME, DB_VERSION);
+                request.onupgradeneeded = (event) => {
+                    const db = (event.target).result;
+                    if (!db.objectStoreNames.contains(STORE_NAME)) {
+                        db.createObjectStore(STORE_NAME);
+                    }
+                };
+                request.onsuccess = (event) => resolve((event.target).result);
+                request.onerror = (event) => reject((event.target).error);
+            });
+        };
+
+        const storeDirectoryHandle = async (key, handle) => {
+            const db = await openDB();
+            const tx = db.transaction(STORE_NAME, 'readwrite');
+            const store = tx.objectStore(STORE_NAME);
+            store.put(handle, key);
+            return new Promise((resolve, reject) => {
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        };
+
+        const getDirectoryHandle = async (key) => {
+            const db = await openDB();
+            const tx = db.transaction(STORE_NAME, 'readonly');
+            const store = tx.objectStore(STORE_NAME);
+            const request = store.get(key);
+            return new Promise((resolve, reject) => {
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+        };
+
+        const verifyPermission = async (handle, readWrite = true) => {
+            const options = { mode: readWrite ? 'readwrite' : 'read' };
+            if ((await handle.queryPermission(options)) === 'granted') return true;
+            if ((await handle.requestPermission(options)) === 'granted') return true;
+            return false;
+        };
+
+        const saveFileToFolder = async (dirHandle, filename, content) => {
+            try {
+                const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
+                const writable = await fileHandle.createWritable();
+                await writable.write(content);
+                await writable.close();
+                return true;
+            } catch (error) {
+                console.error(`Failed to save ${filename}:`, error);
+                return false;
+            }
+        };
+
+        // --- HOOKS ---
+        function useLocalStorage(key, initialValue) {
+            const [storedValue, setStoredValue] = useState(() => {
+                try {
+                    if (typeof window === 'undefined') {
+                        return initialValue;
+                    }
+                    const item = window.localStorage.getItem(key);
+                    return item ? JSON.parse(item) : initialValue;
+                } catch (error) {
+                    console.error(error);
+                    return initialValue;
+                }
+            });
+
+            const setValue = (value) => {
+                try {
+                    const valueToStore = value instanceof Function ? value(storedValue) : value;
+                    setStoredValue(valueToStore);
+                    if (typeof window !== 'undefined') {
+                        window.localStorage.setItem(key, JSON.stringify(valueToStore));
+                    }
+                } catch (error) {
+                    console.error(error);
+                }
+            };
+
+            return [storedValue, setValue];
+        }
+
+        // --- COMPONENTS ---
+
+        // Icons
+        const PlusIcon = (props) => (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" {...props}>
+                <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
+            </svg>
+        );
+        const PlayIcon = (props) => (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" {...props}>
+                <path d="M8 5v14l11-7z" />
+            </svg>
+        );
+        const PauseIcon = (props) => (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" {...props}>
+                <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
+            </svg>
+        );
+        const TrashIcon = (props) => (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" {...props}>
+                <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />
+            </svg>
+        );
+        const ClockPlusIcon = (props) => (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" {...props}>
+                <path d="M12 2C6.486 2 2 6.486 2 12s4.486 10 10 10 10-4.486 10-10S17.514 2 12 2zm0 18c-4.411 0-8-3.589-8-8s3.589-8 8-8 8 3.589 8 8-3.589 8-8 8zm-1-13h2v4h4v2h-4v4h-2v-4H7v-2h4V7z" />
+            </svg>
+        );
+        const EditIcon = (props) => (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" {...props}>
+                <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" />
+            </svg>
+        );
+        const SettingsIcon = (props) => (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" {...props}>
+                <path d="M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.12.22-.07.5.12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12-.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49.42l.38-2.65c.61-.25 1.17-.59 1.69.98l2.49 1c.23.09.49 0 .61.22l2-3.46c.12-.22-.07-.5-.12-.64l-2.11-1.65zM12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z" />
+            </svg>
+        );
+        const BackIcon = (props) => (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" {...props}>
+                <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
+            </svg>
+        );
+        const SearchIcon = (props) => (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" {...props}>
+                <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
+            </svg>
+        );
+        const CheckIcon = (props) => (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" {...props}>
+                <path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
+            </svg>
+        );
+        const ChevronLeftIcon = (props) => (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" {...props}>
+                <path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z" />
+            </svg>
+        );
+        const ChevronRightIcon = (props) => (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" {...props}>
+                <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z" />
+            </svg>
+        );
+
+        // --- COMMON COMPONENTS ---
+        const Modal = ({ children }) => {
+            return (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 animate-[fadeIn_0.3s_ease]">
+                <div className="bg-bgSecondary p-6 rounded-xl w-[90%] max-w-[450px] shadow-lg border border-borderColor">
+                    {children}
+                </div>
+                </div>
+            );
+        };
+
+        const FormInput = (props) => (
+            <input className="w-full p-3 rounded-lg border border-borderColor bg-bgPrimary text-textPrimary focus:outline-none focus:border-[var(--accent-color-primary)] focus:ring-1 focus:ring-[var(--accent-color-primary)] transition-all" {...props} />
+        );
+
+        const ModalButton = ({ variant = 'primary', ...props }) => {
+            let baseClass = "px-5 py-2.5 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
+            if (variant === 'primary') baseClass += " bg-[var(--accent-color-primary)] text-white hover:bg-[var(--accent-color-dark)]";
+            else if (variant === 'danger') baseClass += " bg-red-500 text-white hover:bg-red-600";
+            else baseClass += " bg-transparent text-textSecondary border border-borderColor hover:border-[var(--accent-color-light)] hover:text-[var(--accent-color-light)]";
+            return <button className={baseClass} {...props} />;
+        };
+
+        // --- SPECIFIC MODALS ---
+        const EditProjectModal = ({ project, onSave, onClose, sections, setSections, categoryLabels, allProjects }) => {
+            const [name, setName] = useState(project?.name || '');
+            const [notes, setNotes] = useState(project?.notes || '');
+            const [section, setSection] = useState(project?.section || '');
+            const [subsection, setSubsection] = useState(project?.subsection || '');
+            
+            const subsectionSuggestions = useMemo(() => {
+                if (!section.trim()) return [];
+                const subsectionsForSection = allProjects
+                    .filter(p => p.section === section.trim())
+                    .map(p => p.subsection);
+                return [...new Set(subsectionsForSection)];
+            }, [section, allProjects]);
+
+            const handleSave = () => {
+                if (name.trim() === '') return alert('Project name cannot be empty.');
+                const finalSection = section.trim() === '' ? 'Uncategorized' : section.trim();
+                const finalSubsection = subsection.trim() === '' ? 'General' : subsection.trim();
+                
+                onSave({
+                    ...project,
+                    id: project?.id || Date.now(),
+                    name: name.trim(),
+                    notes: notes.trim(),
+                    section: finalSection,
+                    subsection: finalSubsection,
+                    createdAt: project?.createdAt || new Date().toISOString(),
+                    timeSpent: project?.timeSpent || 0,
+                    logs: project?.logs || [],
+                    isExpanded: project?.isExpanded || false,
+                    color: project?.color || DEFAULT_GLOBAL_COLOR,
+                    status: project?.status || 'current',
+                    readyForInvoicingAt: project?.readyForInvoicingAt || null,
+                    invoicedAt: project?.invoicedAt || null,
+                });
+
+                if (finalSection !== 'Uncategorized' && !sections.includes(finalSection)) {
+                    setSections(prev => [...prev, finalSection]);
+                }
+                onClose();
+            };
+
+            return (
+                <Modal>
+                    <h2 className="text-xl font-bold text-center mb-6">{project ? 'Edit Project' : 'Add New Project'}</h2>
+                    <div className="space-y-4">
+                        <div>
+                            <label className="block text-sm font-medium text-textSecondary mb-1">Project Name</label>
+                            <FormInput value={name} onChange={e => setName(e.target.value)} />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-textSecondary mb-1">{categoryLabels.section}</label>
+                            <FormInput list="section-suggestions" value={section} onChange={e => setSection(e.target.value)} />
+                            <datalist id="section-suggestions">{sections.map(s => <option key={s} value={s} />)}</datalist>
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-textSecondary mb-1">{categoryLabels.subsection}</label>
+                            <FormInput list="sub-suggestions" value={subsection} onChange={e => setSubsection(e.target.value)} />
+                            <datalist id="sub-suggestions">{subsectionSuggestions.map(s => <option key={s} value={s} />)}</datalist>
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-textSecondary mb-1">Notes</label>
+                            <textarea 
+                                className="w-full p-3 rounded-lg border border-borderColor bg-bgPrimary text-textPrimary focus:outline-none focus:border-[var(--accent-color-primary)] min-h-[80px]"
+                                value={notes} onChange={e => setNotes(e.target.value)} 
+                            />
+                        </div>
+                    </div>
+                    <div className="flex justify-end gap-2 mt-6">
+                        <ModalButton variant="secondary" onClick={onClose}>Cancel</ModalButton>
+                        <ModalButton variant="primary" onClick={handleSave} disabled={!name.trim()}>Save</ModalButton>
+                    </div>
+                </Modal>
+            );
+        };
+
+        const ManualTimeEntryModal = ({ project, logToEdit, onSave, onClose }) => {
+            const [entryType, setEntryType] = useState(logToEdit?.manualType || 'range');
+            const [logText, setLogText] = useState(logToEdit?.logText || '');
+            const [hours, setHours] = useState(logToEdit ? Math.floor(logToEdit.duration / 3600).toString() : '0');
+            const [minutes, setMinutes] = useState(logToEdit ? Math.floor((logToEdit.duration % 3600) / 60).toString() : '30');
+            const [date, setDate] = useState(formatDateForInput(logToEdit?.date || new Date().toISOString()));
+            const [startTime, setStartTime] = useState(formatTimeForInput(logToEdit?.startTime || new Date(Date.now() - 30 * 60000).toISOString()));
+            const [endTime, setEndTime] = useState(formatTimeForInput(logToEdit?.endTime || new Date().toISOString()));
+
+            const handleSave = () => {
+                let logEntry;
+                const logId = logToEdit?.id || Date.now();
+                const baseLog = { id: logId, method: 'manual', logText: logText.trim(), manualType: entryType };
+
+                if (entryType === 'duration') {
+                    const totalSeconds = (parseInt(hours) || 0) * 3600 + (parseInt(minutes) || 0) * 60;
+                    if (totalSeconds <= 0) return alert("Duration must be greater than zero.");
+                    const startDateTime = new Date(`${date}T12:00:00`); // approximate
+                    logEntry = { ...baseLog, date: startDateTime.toISOString(), startTime: startDateTime.toISOString(), endTime: new Date(startDateTime.getTime() + totalSeconds * 1000).toISOString(), duration: totalSeconds };
+                } else {
+                    const startDateTime = new Date(`${date}T${startTime}`);
+                    const endDateTime = new Date(`${date}T${endTime}`);
+                    if (startDateTime >= endDateTime) return alert("End time must be after start time.");
+                    logEntry = { ...baseLog, date: startDateTime.toISOString(), startTime: startDateTime.toISOString(), endTime: endDateTime.toISOString(), duration: (endDateTime.getTime() - startDateTime.getTime()) / 1000 };
+                }
+                onSave(project.id, logEntry);
+                onClose();
+            };
+
+            return (
+                <Modal>
+                    <h2 className="text-xl font-bold text-center mb-4">{logToEdit ? 'Edit Time' : 'Add Time'} for {project.name}</h2>
+                    <div className="space-y-4">
+                        <div className="flex gap-4 mb-2">
+                            <label className="flex items-center gap-2 cursor-pointer">
+                                <input type="radio" checked={entryType === 'range'} onChange={() => setEntryType('range')} className="accent-[var(--accent-color-primary)]" />
+                                <span className="text-sm">By Time Range</span>
+                            </label>
+                            <label className="flex items-center gap-2 cursor-pointer">
+                                <input type="radio" checked={entryType === 'duration'} onChange={() => setEntryType('duration')} className="accent-[var(--accent-color-primary)]" />
+                                <span className="text-sm">By Duration</span>
+                            </label>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-4">
+                            <div>
+                                <label className="block text-xs font-medium text-textSecondary mb-1">Date</label>
+                                <FormInput type="date" value={date} onChange={e => setDate(e.target.value)} />
+                            </div>
+                            {entryType === 'range' ? (
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-xs font-medium text-textSecondary mb-1">Start</label>
+                                        <FormInput type="time" value={startTime} onChange={e => setStartTime(e.target.value)} />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-medium text-textSecondary mb-1">End</label>
+                                        <FormInput type="time" value={endTime} onChange={e => setEndTime(e.target.value)} />
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-xs font-medium text-textSecondary mb-1">Hours</label>
+                                        <FormInput type="number" min="0" value={hours} onChange={e => setHours(e.target.value)} />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-medium text-textSecondary mb-1">Minutes</label>
+                                        <FormInput type="number" min="0" max="59" value={minutes} onChange={e => setMinutes(e.target.value)} />
+                                    </div>
+                                </div>
+                            )}
+                            <div>
+                                <label className="block text-sm font-medium text-textSecondary mb-1">Note (Optional)</label>
+                                <FormInput value={logText} onChange={e => setLogText(e.target.value)} placeholder="What did you work on?" />
+                            </div>
+                        </div>
+                    </div>
+                    <div className="flex justify-end gap-2 mt-6">
+                        <ModalButton variant="secondary" onClick={onClose}>Cancel</ModalButton>
+                        <ModalButton variant="primary" onClick={handleSave}>Save</ModalButton>
+                    </div>
+                </Modal>
+            );
+        };
+
+        const ImportPreviewModal = ({ data, onClose, onConfirm }) => {
+            const [selections, setSelections] = useState({
+                selectedProjectIds: new Set(data.projects?.map(p => p.id) || []),
+                categoryLabels: true,
+                appearance: true,
+                websiteName: true,
+            });
+
+            const toggleProject = (id) => {
+                const newSet = new Set(selections.selectedProjectIds);
+                if (newSet.has(id)) newSet.delete(id); else newSet.add(id);
+                setSelections(prev => ({ ...prev, selectedProjectIds: newSet }));
+            };
+            
+            const allSelected = data.projects && selections.selectedProjectIds.size === data.projects.length;
+
+            return (
+                <Modal>
+                    <h2 className="text-xl font-bold text-center mb-2">Import Preview</h2>
+                    <p className="text-textSecondary text-sm text-center mb-4">Select the data you want to import.</p>
+                    <div className="space-y-2 border border-borderColor rounded-lg p-3 max-h-[300px] overflow-y-auto">
+                        {data.websiteName && (
+                            <label className="flex items-center gap-3 p-2 hover:bg-bgPrimary rounded cursor-pointer">
+                                <input type="checkbox" checked={selections.websiteName} onChange={e => setSelections(s => ({...s, websiteName: e.target.checked}))} className="accent-[var(--accent-color-primary)] w-4 h-4"/>
+                                <div>
+                                    <span className="font-bold block text-sm">App Name</span>
+                                    <span className="text-xs text-textSecondary">{data.websiteName}</span>
+                                </div>
+                            </label>
+                        )}
+                        {data.projects && data.projects.length > 0 && (
+                            <div className="mt-2 pt-2 border-t border-borderColor">
+                                <label className="flex items-center gap-3 p-2 hover:bg-bgPrimary rounded cursor-pointer">
+                                    <input type="checkbox" checked={allSelected} onChange={e => setSelections(s => ({...s, selectedProjectIds: e.target.checked ? new Set(data.projects?.map(p => p.id)) : new Set() }))} className="accent-[var(--accent-color-primary)] w-4 h-4"/>
+                                    <span className="font-bold text-sm">Select All Projects ({data.projects.length})</span>
+                                </label>
+                                <div className="pl-4 space-y-1 mt-1">
+                                    {data.projects.map(p => (
+                                        <label key={p.id} className="flex items-center gap-2 p-1 hover:bg-bgPrimary rounded cursor-pointer">
+                                            <input type="checkbox" checked={selections.selectedProjectIds.has(p.id)} onChange={() => toggleProject(p.id)} className="accent-[var(--accent-color-primary)] w-4 h-4"/>
+                                            <div className="flex-1 min-w-0">
+                                                <div className="text-sm truncate">{p.name}</div>
+                                                <div className="text-xs text-textSecondary">{formatTime(p.timeSpent)}</div>
+                                            </div>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                    <div className="flex justify-end gap-2 mt-6">
+                        <ModalButton variant="secondary" onClick={onClose}>Cancel</ModalButton>
+                        <ModalButton variant="primary" onClick={() => onConfirm(selections)}>Import</ModalButton>
+                    </div>
+                </Modal>
+            )
+        }
+
+        const ConfirmModal = ({ title, message, onConfirm, onCancel, isDanger }) => (
+            <Modal>
+                <h2 className="text-xl font-bold text-center mb-4">{title}</h2>
+                <div className="text-center text-textSecondary mb-6">{message}</div>
+                <div className="flex justify-end gap-2">
+                    <ModalButton variant="secondary" onClick={onCancel}>Cancel</ModalButton>
+                    <ModalButton variant={isDanger ? 'danger' : 'primary'} onClick={onConfirm}>Confirm</ModalButton>
+                </div>
+            </Modal>
+        );
+
+        // --- HEADER ---
+        const Header = ({ 
+            websiteName, onAddProject, onSettings, onSearch, searchCriteria, onClearSearch, 
+            sortCriteria, setSortCriteria, activeWorkArea, setActiveWorkArea, onConfirmSave, isConfirmingSave 
+        }) => {
+            return (
+                <header className="flex flex-col md:flex-row justify-between items-center py-4 gap-4 shrink-0 border-b border-borderColor/50 mb-2">
+                    <div className="flex items-center flex-wrap gap-4 justify-center md:justify-start w-full md:w-auto">
+                        <h1 className="font-display text-3xl text-[var(--accent-color-light)] whitespace-nowrap relative after:content-[''] after:absolute after:bottom-0 after:left-0 after:w-full after:h-0.5 after:bg-borderColor py-2">
+                            {websiteName}
+                        </h1>
+                        <button onClick={onAddProject} className="flex items-center gap-2 bg-[var(--accent-color-primary)] text-white px-4 py-2 rounded-lg hover:bg-[var(--accent-color-dark)] transition-colors font-medium text-sm">
+                            <PlusIcon className="w-5 h-5" /> Add Project
+                        </button>
+                        <div className="flex items-center border border-borderColor rounded-lg overflow-hidden">
+                            {['current', 'ready', 'invoiced'].map(status => (
+                                <button
+                                    key={status}
+                                    onClick={() => setActiveWorkArea(status)}
+                                    className={`px-3 py-2 text-xs font-medium transition-colors border-r border-borderColor last:border-r-0 ${
+                                        activeWorkArea === status ? 'bg-[var(--accent-color-primary)] text-white' : 'text-textSecondary hover:text-[var(--accent-color-light)]'
+                                    }`}
+                                >
+                                    {status === 'ready' ? 'Ready' : status.charAt(0).toUpperCase() + status.slice(1)}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="flex items-center gap-3 w-full md:w-auto justify-end">
+                        {searchCriteria && (
+                            <div className="flex items-center gap-2 bg-bgSecondary px-3 py-1 rounded-full border border-borderColor">
+                                <span className="text-xs text-textSecondary truncate max-w-[100px]">Filtering...</span>
+                                <button onClick={onClearSearch} className="text-red-500 text-xs hover:text-red-400 font-bold">×</button>
+                            </div>
+                        )}
+                        <select 
+                            value={sortCriteria} 
+                            onChange={(e) => setSortCriteria(e.target.value)}
+                            className="bg-transparent border border-borderColor text-textSecondary text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-[var(--accent-color-light)]"
+                        >
+                            <option value="newest">Newest</option>
+                            <option value="oldest">Oldest</option>
+                            <option value="nameAsc">A-Z</option>
+                            <option value="timeSpent">Time</option>
+                        </select>
+                        <button onClick={onSearch} className="p-2 text-textSecondary hover:bg-white/10 rounded-full transition-colors" title="Search">
+                            <SearchIcon className="w-6 h-6" />
+                        </button>
+                        <button onClick={onSettings} className="p-2 text-textSecondary hover:bg-white/10 rounded-full transition-colors" title="Settings">
+                            <SettingsIcon className="w-6 h-6" />
+                        </button>
+                        <button 
+                            onClick={onConfirmSave} 
+                            disabled={isConfirmingSave}
+                            className={`flex items-center gap-1 border border-borderColor px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isConfirmingSave ? 'text-[var(--accent-color-light)] border-[var(--accent-color-light)] bg-[var(--accent-color-primary)]/10' : 'text-textSecondary hover:text-[var(--accent-color-light)] hover:border-[var(--accent-color-light)]'}`}
+                        >
+                            {isConfirmingSave ? <><CheckIcon className="w-4 h-4"/> Saved!</> : 'Save'}
+                        </button>
+                    </div>
+                </header>
+            );
+        };
+
+        // --- PROJECT ITEM ---
+        const ProjectItem = ({
+            project, onDelete, onEdit, onAddTime, onToggleExpand, onUpdateColor, onDeleteLog,
+            onEditLog, onMoveProject, activeTimer, elapsedTime, onStartTimer, onStopTimer, onLogItemClick
+        }) => {
+            const isTimerRunning = activeTimer?.projectId === project.id;
+            const sortedLogs = useMemo(() => [...project.logs].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()), [project.logs]);
+
+            const renderActionButtons = () => {
+                const btnClass = "px-3 py-1 text-textSecondary border border-borderColor rounded hover:border-[var(--accent-color-light)] hover:text-[var(--accent-color-light)] transition-colors text-xs font-bold";
+                if (project.status === 'current') return <button onClick={(e) => {e.stopPropagation(); onMoveProject(project.id, 'ready')}} className={btnClass} title="Move to Ready">&gt;</button>;
+                if (project.status === 'ready') return <><button onClick={(e) => {e.stopPropagation(); onMoveProject(project.id, 'current')}} className={btnClass} title="Back to Current">&lt;</button><button onClick={(e) => {e.stopPropagation(); onMoveProject(project.id, 'invoiced')}} className={btnClass} title="Move to Invoiced">&gt;</button></>;
+                if (project.status === 'invoiced') return <button onClick={(e) => {e.stopPropagation(); onMoveProject(project.id, 'ready')}} className={btnClass} title="Back to Ready">&lt;</button>;
+                return null;
+            };
+
+            return (
+                <li id={`project-item-${project.id}`} className={`relative rounded-xl border border-borderColor bg-bgSecondary transition-all overflow-hidden mb-4 ${project.isExpanded ? 'ring-1 ring-[var(--accent-color-primary)]' : ''}`}>
+                    <div className="flex flex-row items-center gap-4 p-4 cursor-pointer hover:bg-white/5 transition-colors" onClick={() => onToggleExpand(project.id)}>
+                        
+                        {/* Left Controls */}
+                        <div className="flex flex-col items-center gap-1 shrink-0">
+                            <span className="text-[10px] text-textSecondary">{formatCreationDate(project.createdAt)}</span>
+                            <div className="flex gap-1">
+                                <button 
+                                    onClick={(e) => { e.stopPropagation(); isTimerRunning ? onStopTimer() : onStartTimer(project.id); }}
+                                    className={`p-2 rounded-full flex items-center justify-center transition-colors ${isTimerRunning ? 'bg-[var(--accent-color-primary)] text-white' : 'hover:bg-white/10 text-textSecondary'}`}
+                                >
+                                    {isTimerRunning ? <PauseIcon className="w-5 h-5" /> : <PlayIcon className="w-5 h-5" />}
+                                </button>
+                                <button 
+                                    onClick={(e) => { e.stopPropagation(); onAddTime(project); }}
+                                    className="p-2 rounded-full hover:bg-white/10 text-textSecondary transition-colors"
+                                >
+                                    <ClockPlusIcon className="w-5 h-5" />
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Info Stack */}
+                        <div className="flex-1 min-w-0 flex flex-col gap-1">
+                            <div className="flex items-start gap-2">
+                                <h3 className="font-medium text-lg text-textPrimary line-clamp-2" title={project.name}>{project.name}</h3>
+                            </div>
+                            <div className="flex items-baseline gap-3">
+                                <span className="font-mono text-xl font-medium" style={{ color: project.color }}>{formatTime(project.timeSpent)}</span>
+                                {isTimerRunning && (
+                                    <span className="font-mono text-sm font-medium text-textSecondary bg-bgPrimary px-2 py-0.5 rounded animate-pulse">
+                                        + {formatTime(elapsedTime)}
+                                    </span>
+                                )}
+                            </div>
+                            {project.notes && (
+                                <p className="text-xs text-textSecondary line-clamp-1 italic" title={project.notes}>
+                                    {project.notes}
+                                </p>
+                            )}
+                        </div>
+
+                        {/* Actions & Right Controls */}
+                        <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                            {renderActionButtons()}
+                        </div>
+
+                        <div className="flex flex-col items-center gap-1 ml-auto shrink-0" onClick={e => e.stopPropagation()}>
+                            <div className="relative w-6 h-6 rounded-full border-2 border-borderColor overflow-hidden hover:border-[var(--accent-color-light)] cursor-pointer">
+                                <div className="w-full h-full" style={{ backgroundColor: project.color }}></div>
+                                <input type="color" className="absolute inset-0 opacity-0 cursor-pointer" value={project.color} onChange={(e) => onUpdateColor(project.id, e.target.value)} />
+                            </div>
+                            <button onClick={() => onEdit(project)} className="p-1 hover:text-[var(--accent-color-light)] text-textSecondary"><EditIcon className="w-4 h-4" /></button>
+                            <button onClick={() => onDelete(project.id)} className="p-1 hover:text-red-500 text-textSecondary"><TrashIcon className="w-4 h-4" /></button>
+                        </div>
+                    </div>
+
+                    {/* Expanded Details */}
+                    {project.isExpanded && (
+                        <div className="px-4 pb-4 border-t border-borderColor/50 pt-4 animate-[fadeIn_0.3s]">
+                            {project.notes && <p className="text-sm italic text-textSecondary mb-4 whitespace-pre-wrap">{project.notes}</p>}
+                            
+                            <h4 className="text-sm font-medium text-textPrimary mb-2">Time Log</h4>
+                            <ul className="max-h-[250px] overflow-y-auto pr-2 space-y-1 custom-scrollbar">
+                                {sortedLogs.length > 0 ? sortedLogs.map(log => {
+                                    const { formattedDate, isWeekend } = formatLogDate(log.date);
+                                    return (
+                                        <li key={log.id} id={`log-item-${log.id}`} onClick={() => onLogItemClick(log)} className="flex justify-between items-center p-2 rounded hover:bg-white/5 cursor-pointer text-sm group">
+                                            <div className="flex flex-col">
+                                                <div className="flex items-center gap-2">
+                                                    <span className={`font-medium ${isWeekend ? 'text-[var(--accent-color-light)]' : 'text-textPrimary'}`}>{formattedDate}</span>
+                                                    <span className="text-xs text-textSecondary">{formatLogTime(log.startTime)} - {formatLogTime(log.endTime)} ({log.method})</span>
+                                                </div>
+                                                {log.logText && <span className="text-xs text-textSecondary italic">"{log.logText}"</span>}
+                                            </div>
+                                            <div className="flex items-center gap-3">
+                                                <span className="font-mono">{formatTime(log.duration)}</span>
+                                                <div className="flex opacity-0 group-hover:opacity-100 transition-opacity">
+                                                    <button onClick={(e) => { e.stopPropagation(); onEditLog(project.id, log); }} className="p-1 hover:text-[var(--accent-color-light)]"><EditIcon className="w-4 h-4" /></button>
+                                                    <button onClick={(e) => { e.stopPropagation(); onDeleteLog(project.id, log.id); }} className="p-1 hover:text-red-500"><TrashIcon className="w-4 h-4" /></button>
+                                                </div>
+                                            </div>
+                                        </li>
+                                    );
+                                }) : <p className="text-sm text-textSecondary italic text-center py-2">No logs yet.</p>}
+                            </ul>
+                        </div>
+                    )}
+                </li>
+            );
+        };
+
+        // --- PROJECT LIST ---
+        const ProjectList = (props) => {
+            const { projects, categoryLabels, expansionState, setExpansionState } = props;
+
+            const handleToggle = (type, sectionName, subsectionName = null) => {
+                setExpansionState((prev) => {
+                    const newState = JSON.parse(JSON.stringify(prev));
+                    if (type === 'section') {
+                        if (!newState[sectionName]) newState[sectionName] = {};
+                        newState[sectionName].__isOpen = !(newState[sectionName].__isOpen ?? true);
+                    } else if (type === 'subsection' && subsectionName) {
+                        if (!newState[sectionName]) newState[sectionName] = { __isOpen: true };
+                        newState[sectionName][subsectionName] = !(newState[sectionName][subsectionName] ?? true);
+                    }
+                    return newState;
+                });
+            };
+
+            const groupedProjects = useMemo(() => {
+                return projects.reduce((acc, project) => {
+                    const section = project.section || 'Uncategorized';
+                    const subsection = project.subsection || 'General';
+                    if (!acc[section]) acc[section] = {};
+                    if (!acc[section][subsection]) acc[section][subsection] = [];
+                    acc[section][subsection].push(project);
+                    return acc;
+                }, {});
+            }, [projects]);
+
+            if (projects.length === 0) return <p className="text-center mt-12 text-textSecondary">No projects yet. Click "Add Project" to start!</p>;
+
+            return (
+                <div className="flex flex-col gap-6">
+                    {Object.entries(groupedProjects).map(([sectionName, subsections]) => {
+                        const isSectionOpen = expansionState[sectionName]?.__isOpen ?? true;
+                        const totalProjects = Object.values(subsections).reduce((t, p) => t + p.length, 0);
+
+                        return (
+                            <div key={sectionName} className="group">
+                                <div 
+                                    className="flex items-center gap-2 cursor-pointer border-b-2 border-borderColor pb-2 mb-2 select-none"
+                                    onClick={() => handleToggle('section', sectionName)}
+                                >
+                                    <span className={`transform transition-transform text-textSecondary ${isSectionOpen ? 'rotate-90' : ''}`}>▶</span>
+                                    <h2 className="text-xl font-bold text-[var(--accent-color-primary)]">{sectionName}</h2>
+                                    <span className="text-sm text-textSecondary font-normal ml-auto">{totalProjects} Projects</span>
+                                </div>
+                                
+                                {isSectionOpen && (
+                                    <div className="pl-2">
+                                        {Object.entries(subsections).map(([subsectionName, subProjects]) => {
+                                            const isSubOpen = expansionState[sectionName]?.[subsectionName] ?? true;
+                                            return (
+                                                <div key={subsectionName} className="mb-4 pl-4 border-l-2 border-borderColor">
+                                                    <div 
+                                                        className="flex items-center gap-2 cursor-pointer py-2 select-none"
+                                                        onClick={() => handleToggle('subsection', sectionName, subsectionName)}
+                                                    >
+                                                        <span className={`text-xs transform transition-transform text-textSecondary ${isSubOpen ? 'rotate-90' : ''}`}>▶</span>
+                                                        <h3 className="text-md font-medium text-textPrimary">{subsectionName}</h3>
+                                                        <span className="text-xs text-textSecondary ml-2">({subProjects.length})</span>
+                                                    </div>
+                                                    {isSubOpen && (
+                                                        <ul className="flex flex-col gap-0 mt-2">
+                                                            {subProjects.map((project) => (
+                                                                <ProjectItem key={project.id} project={project} {...props} />
+                                                            ))}
+                                                        </ul>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
+            );
+        };
+
+        // --- CALENDAR ---
+        const toLocalYMD = (date) => {
+            return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0');
+        };
+
+        const DayView = ({ selectedDate, logs, onLogClick, dayViewScrollTopRef, scrollToTime, setScrollToTime }) => {
+            const scrollRef = useRef(null);
+
+            useEffect(() => {
+                if (scrollRef.current) {
+                    let scrollTo = 480; // Default 8am (8 * 60)
+                    if (scrollToTime) {
+                        const date = new Date(scrollToTime);
+                        scrollTo = Math.max(0, (date.getHours() * 60 + date.getMinutes()) - 100);
+                        setScrollToTime(null);
+                    } else if (dayViewScrollTopRef.current > 0) {
+                        scrollTo = dayViewScrollTopRef.current;
+                    }
+                    setTimeout(() => {
+                        scrollRef.current?.scrollTo({ top: scrollTo, behavior: 'smooth' });
+                    }, 100);
+                }
+            }, [selectedDate, scrollToTime, setScrollToTime, dayViewScrollTopRef]);
+
+            return (
+                <div className="flex flex-col h-full bg-bgSecondary/50 rounded-lg overflow-hidden">
+                    <div className="p-3 border-b border-borderColor text-center font-bold">
+                        {selectedDate.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}
+                    </div>
+                    <div 
+                        ref={scrollRef} 
+                        className="flex-1 overflow-y-auto relative custom-scrollbar"
+                        onScroll={(e) => { if(!scrollToTime) dayViewScrollTopRef.current = (e.target).scrollTop; }}
+                    >
+                        <div className="relative h-[1440px]"> {/* 24h * 60px */}
+                            {Array.from({ length: 24 }).map((_, i) => (
+                                <div key={i} className="h-[60px] border-t border-borderColor/30 relative flex">
+                                    <span className="absolute -top-3 left-1 text-xs text-textSecondary bg-bgSecondary px-1">
+                                        {i === 0 ? '12 AM' : i < 12 ? `${i} AM` : i === 12 ? '12 PM' : `${i - 12} PM`}
+                                    </span>
+                                </div>
+                            ))}
+                            {logs.map(log => {
+                                const start = new Date(log.startTime);
+                                const top = start.getHours() * 60 + start.getMinutes();
+                                const height = Math.max(20, log.duration / 60); // Min height 20px
+                                return (
+                                    <div 
+                                        key={log.id} 
+                                        className="absolute left-12 right-2 rounded px-2 py-1 text-xs text-white overflow-hidden cursor-pointer hover:brightness-110 border border-black/20 z-10"
+                                        style={{ top: `${top}px`, height: `${height}px`, backgroundColor: log.color }}
+                                        onClick={() => onLogClick(log.projectId, log.id)}
+                                        title={`${log.projectName} (${formatTime(log.duration)})`}
+                                    >
+                                        <div className="font-bold truncate">{log.projectName}</div>
+                                        <div className="opacity-80">{formatTime(log.duration)}</div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const Calendar = ({ 
+            projects, onLogClick, dayViewScrollTopRef, view, setView, selectedDate, setSelectedDate, scrollToTime, setScrollToTime 
+        }) => {
+            const [months, setMonths] = useState([]);
+            const scrollContainerRef = useRef(null);
+            const topSentinelRef = useRef(null);
+            const bottomSentinelRef = useRef(null);
+            const todayRef = useRef(null);
+            const isInitialLoad = useRef(true);
+            
+            // Infinite Scroll Refs
+            const prevScrollHeightRef = useRef(0);
+            const prevScrollTopRef = useRef(0);
+            const isPrependingRef = useRef(false);
+
+            // Initial Load
+            useEffect(() => {
+                const today = new Date();
+                const initial = [];
+                // Load fewer months initially to ensure quick render, but enough to fill screen
+                for(let i = -2; i <= 2; i++) {
+                    initial.push(getMonthData(today.getFullYear(), today.getMonth() + i));
+                }
+                setMonths(initial);
+            }, []);
+
+            // Handle Scroll Restoration after prepending months
+            useLayoutEffect(() => {
+                if (isPrependingRef.current && scrollContainerRef.current) {
+                    const newScrollHeight = scrollContainerRef.current.scrollHeight;
+                    const diff = newScrollHeight - prevScrollHeightRef.current;
+                    if (diff > 0) {
+                        scrollContainerRef.current.scrollTop = prevScrollTopRef.current + diff;
+                    }
+                    isPrependingRef.current = false;
+                }
+            }, [months]);
+
+            const loadMorePast = () => {
+                if (!scrollContainerRef.current) return;
+                prevScrollHeightRef.current = scrollContainerRef.current.scrollHeight;
+                prevScrollTopRef.current = scrollContainerRef.current.scrollTop;
+                isPrependingRef.current = true;
+
+                setMonths(prev => {
+                    if (prev.length === 0) return [];
+                    const first = prev[0];
+                    const d = new Date(first.year, first.month);
+                    const newM = [];
+                    // Load 6 months at a time for smooth infinite scrolling
+                    for(let i=1; i<=6; i++) {
+                        d.setMonth(d.getMonth() - 1);
+                        newM.unshift(getMonthData(d.getFullYear(), d.getMonth()));
+                    }
+                    return [...newM, ...prev];
+                });
+            };
+
+            const loadMoreFuture = () => {
+                setMonths(prev => {
+                    if (prev.length === 0) return [];
+                    const last = prev[prev.length - 1];
+                    const d = new Date(last.year, last.month);
+                    const newM = [];
+                    for(let i=1; i<=6; i++) {
+                        d.setMonth(d.getMonth() + 1);
+                        newM.push(getMonthData(d.getFullYear(), d.getMonth()));
+                    }
+                    return [...prev, ...newM];
+                });
+            };
+
+            // Infinite Scroll Observer
+            useEffect(() => {
+                const obs = new IntersectionObserver(entries => {
+                    entries.forEach(e => {
+                        if(e.isIntersecting) {
+                            if(e.target === topSentinelRef.current) {
+                                loadMorePast();
+                            }
+                            if(e.target === bottomSentinelRef.current) {
+                                loadMoreFuture();
+                            }
+                        }
+                    });
+                }, { threshold: 0.1 });
+
+                if(topSentinelRef.current) obs.observe(topSentinelRef.current);
+                if(bottomSentinelRef.current) obs.observe(bottomSentinelRef.current);
+                return () => obs.disconnect();
+            }, []);
+
+            // Scroll to today on initial mount
+            useEffect(() => {
+                if (view === 'month' && isInitialLoad.current && todayRef.current) {
+                    todayRef.current.scrollIntoView({ block: 'center' });
+                    isInitialLoad.current = false;
+                }
+            }, [months, view]);
+
+            const logsByDate = useMemo(() => {
+                const map = new Map();
+                projects.forEach(p => {
+                    p.logs.forEach(l => {
+                        // Use local time for mapping logs to calendar days
+                        const k = toLocalYMD(new Date(l.date));
+                        if (!map.has(k)) map.set(k, []);
+                        map.get(k).push({ color: p.color, projectName: p.name, duration: l.duration });
+                    });
+                });
+                return map;
+            }, [projects]);
+
+            const handleDayClick = (d) => {
+                setSelectedDate(d);
+                setView('day');
+            };
+
+            return (
+                <div className="bg-bgSecondary border border-borderColor rounded-xl h-full flex flex-col overflow-hidden">
+                    <div className="p-4 border-b border-borderColor flex justify-between items-center shrink-0">
+                        <span className="font-bold">{view === 'month' ? 'Calendar' : 'Daily View'}</span>
+                        <div className="flex gap-2">
+                            {view === 'day' ? 
+                                <button onClick={() => setView('month')} className="text-xs px-2 py-1 border border-borderColor rounded hover:text-[var(--accent-color-light)]">Back to Month</button>
+                                :
+                                <button onClick={() => todayRef.current?.scrollIntoView({block:'center', behavior:'smooth'})} className="text-xs px-2 py-1 border border-borderColor rounded hover:text-[var(--accent-color-light)]">Today</button>
+                            }
+                        </div>
+                    </div>
+
+                    {view === 'month' ? (
+                        <div className="flex-1 overflow-y-auto custom-scrollbar" ref={scrollContainerRef}>
+                            <div ref={topSentinelRef} className="h-1" />
+                            {months.map(m => (
+                                <div key={`${m.year}-${m.month}`} className="mb-4">
+                                    <div className="sticky top-0 bg-bgSecondary z-10 py-2 text-center font-bold text-[var(--accent-color-light)] shadow-sm border-b border-borderColor">
+                                        {m.monthName} {m.year}
+                                    </div>
+                                    <div className="grid grid-cols-7 gap-px bg-borderColor border-x border-b border-borderColor">
+                                        {['M','T','W','T','F','S','S'].map(d => <div key={d} className="text-center text-xs py-1 bg-bgSecondary text-textSecondary">{d}</div>)}
+                                        {m.days.map((day, idx) => {
+                                            if (day.isEmpty) return <div key={idx} className="bg-bgSecondary min-h-[80px]" />;
+                                            
+                                            const dateStr = toLocalYMD(day.date);
+                                            const isToday = toLocalYMD(new Date()) === dateStr;
+                                            const logs = logsByDate.get(dateStr) || [];
+                                            
+                                            return (
+                                                <div 
+                                                    key={day.key} 
+                                                    ref={isToday ? todayRef : null}
+                                                    onClick={() => handleDayClick(day.date)}
+                                                    className={`bg-bgSecondary min-h-[80px] p-1 cursor-pointer hover:bg-white/5 transition-colors flex flex-col gap-1 ${isToday ? 'bg-[var(--accent-color-primary)]/10' : ''}`}
+                                                >
+                                                    <span className={`text-xs w-6 h-6 flex items-center justify-center rounded-full ${isToday ? 'bg-[var(--accent-color-primary)] text-white font-bold' : 'text-textSecondary'}`}>
+                                                        {day.date.getDate()}
+                                                    </span>
+                                                    <div className="flex flex-wrap gap-1 justify-center">
+                                                        {logs.slice(0, 5).map((l, i) => (
+                                                            <div key={i} className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: l.color }} title={`${l.projectName}: ${formatTime(l.duration)}`} />
+                                                        ))}
+                                                        {logs.length > 5 && <span className="text-[8px] text-textSecondary">+</span>}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            ))}
+                            <div ref={bottomSentinelRef} className="h-1" />
+                        </div>
+                    ) : (
+                        selectedDate && <DayView 
+                            selectedDate={selectedDate} 
+                            logs={(() => {
+                                const k = toLocalYMD(selectedDate);
+                                const dayLogs = [];
+                                projects.forEach(p => {
+                                    p.logs.forEach(l => {
+                                        if(toLocalYMD(new Date(l.date)) === k) {
+                                            dayLogs.push({ ...l, projectId: p.id, projectName: p.name, color: p.color });
+                                        }
+                                    });
+                                });
+                                return dayLogs;
+                            })()} 
+                            onLogClick={onLogClick} 
+                            dayViewScrollTopRef={dayViewScrollTopRef}
+                            scrollToTime={scrollToTime}
+                            setScrollToTime={setScrollToTime}
+                        />
+                    )}
+                </div>
+            );
+        };
+
+        // --- SETTINGS PAGE ---
+        const ColorPicker = ({ label, color, setColor, history, setHistory }) => {
+            const handleSet = (c) => {
+                setColor(c);
+                setHistory(prev => [c, ...prev.filter(h => h !== c)].slice(0, MAX_COLOR_HISTORY));
+            };
+            return (
+                <div className="mb-4">
+                    <label className="block text-sm font-bold mb-2">{label}</label>
+                    <div className="flex items-center gap-3 mb-2">
+                        <div className="relative w-10 h-10 rounded-full border-2 border-borderColor overflow-hidden cursor-pointer">
+                            <div className="w-full h-full" style={{ backgroundColor: color }} />
+                            <input type="color" className="absolute inset-0 opacity-0 cursor-pointer" value={color} onChange={e => handleSet(e.target.value)} />
+                        </div>
+                        <span className="text-sm font-mono text-textSecondary">{color}</span>
+                    </div>
+                    <div className="flex gap-2 flex-wrap">
+                        {history.map((c, i) => (
+                            <div key={i} className="w-6 h-6 rounded-full cursor-pointer border border-borderColor" style={{ backgroundColor: c }} onClick={() => setColor(c)} />
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        const SettingsPage = ({ 
+            onBack, websiteName, setWebsiteName, categoryLabels, setCategoryLabels, onExport, onImport, onClear, 
+            globalColor, setGlobalColor, backgroundColor, setBackgroundColor, accentColorHistory, setAccentColorHistory, backgroundColorHistory, setBackgroundColorHistory,
+            onSelectRunningBackup, onSelectMasterBackup, runningBackupName, masterBackupName
+        }) => {
+            const [section, setSection] = useState(categoryLabels.section);
+            const [subsection, setSubsection] = useState(categoryLabels.subsection);
+            const [appName, setAppName] = useState(websiteName);
+
+            const handleSaveLabels = () => setCategoryLabels({ section: section || 'Section', subsection: subsection || 'Subsection' });
+            const handleSaveName = () => setWebsiteName(appName || 'Project Timer');
+
+            return (
+                <div className="max-w-3xl mx-auto p-4 animate-[fadeIn_0.3s]">
+                    <div className="flex items-center gap-4 mb-8">
+                        <button onClick={onBack} className="p-2 hover:bg-white/10 rounded-full"><BackIcon className="w-6 h-6" /></button>
+                        <h2 className="text-2xl font-bold">Settings</h2>
+                    </div>
+
+                    <div className="bg-bgSecondary p-6 rounded-xl border border-borderColor mb-6">
+                        <h3 className="text-lg font-bold mb-4 border-b border-borderColor pb-2">Application</h3>
+                        <div className="mb-4">
+                            <label className="block text-sm text-textSecondary mb-1">App Name</label>
+                            <input className="w-full p-2 bg-bgPrimary border border-borderColor rounded text-textPrimary" value={appName} onChange={e => setAppName(e.target.value)} />
+                            <button onClick={handleSaveName} className="mt-2 text-xs text-[var(--accent-color-light)] border border-[var(--accent-color-light)] px-3 py-1 rounded">Save Name</button>
+                        </div>
+                    </div>
+
+                    <div className="bg-bgSecondary p-6 rounded-xl border border-borderColor mb-6">
+                        <h3 className="text-lg font-bold mb-4 border-b border-borderColor pb-2">Appearance</h3>
+                        <ColorPicker label="Accent Color" color={globalColor} setColor={setGlobalColor} history={accentColorHistory} setHistory={setAccentColorHistory} />
+                        <ColorPicker label="Background Color" color={backgroundColor} setColor={setBackgroundColor} history={backgroundColorHistory} setHistory={setBackgroundColorHistory} />
+                    </div>
+
+                    <div className="bg-bgSecondary p-6 rounded-xl border border-borderColor mb-6">
+                        <h3 className="text-lg font-bold mb-4 border-b border-borderColor pb-2">Labels</h3>
+                        <div className="grid grid-cols-2 gap-4 mb-4">
+                            <div>
+                                <label className="block text-sm text-textSecondary mb-1">Section Label</label>
+                                <input className="w-full p-2 bg-bgPrimary border border-borderColor rounded text-textPrimary" value={section} onChange={e => setSection(e.target.value)} />
+                            </div>
+                            <div>
+                                <label className="block text-sm text-textSecondary mb-1">Subsection Label</label>
+                                <input className="w-full p-2 bg-bgPrimary border border-borderColor rounded text-textPrimary" value={subsection} onChange={e => setSubsection(e.target.value)} />
+                            </div>
+                        </div>
+                        <button onClick={handleSaveLabels} className="text-xs text-[var(--accent-color-light)] border border-[var(--accent-color-light)] px-3 py-1 rounded">Save Labels</button>
+                    </div>
+
+                    <div className="bg-bgSecondary p-6 rounded-xl border border-borderColor mb-6">
+                        <h3 className="text-lg font-bold mb-4 border-b border-borderColor pb-2">Data Management</h3>
+                        <div className="flex gap-4 flex-wrap mb-6 border-b border-borderColor/30 pb-6">
+                            <button onClick={onExport} className="px-4 py-2 border border-borderColor rounded hover:border-[var(--accent-color-light)] text-sm">Export Data</button>
+                            <label className="px-4 py-2 border border-borderColor rounded hover:border-[var(--accent-color-light)] text-sm cursor-pointer">
+                                Import Data
+                                <input type="file" accept=".json" onChange={onImport} className="hidden" />
+                            </label>
+                            <button onClick={onClear} className="px-4 py-2 border border-red-500 text-red-500 rounded hover:bg-red-500/10 text-sm ml-auto">Clear All Data</button>
+                        </div>
+
+                        <h4 className="text-md font-bold mb-3">Automatic Offline Backups</h4>
+                        <p className="text-xs text-textSecondary mb-4">
+                            Select local folders to enable automatic backup saving whenever data changes.
+                            <br/>
+                            <span className="opacity-70 italic">Note: Browsers may require permission confirmation on reload.</span>
+                        </p>
+                        
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="p-4 rounded border border-borderColor bg-bgPrimary">
+                                <h5 className="font-bold text-sm mb-1">Running Backup</h5>
+                                <p className="text-xs text-textSecondary mb-3">Saves timestamped files (history).</p>
+                                <div className="flex items-center gap-2 mb-2">
+                                    <div className={`w-2 h-2 rounded-full ${runningBackupName ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                                    <span className="text-xs font-mono truncate">{runningBackupName || 'No folder selected'}</span>
+                                </div>
+                                <button onClick={onSelectRunningBackup} className="text-xs bg-bgSecondary border border-borderColor px-3 py-1.5 rounded hover:border-[var(--accent-color-light)]">Select Folder</button>
+                            </div>
+
+                            <div className="p-4 rounded border border-borderColor bg-bgPrimary">
+                                <h5 className="font-bold text-sm mb-1">Master Backup</h5>
+                                <p className="text-xs text-textSecondary mb-3">Overwrites a single master file.</p>
+                                <div className="flex items-center gap-2 mb-2">
+                                    <div className={`w-2 h-2 rounded-full ${masterBackupName ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                                    <span className="text-xs font-mono truncate">{masterBackupName || 'No folder selected'}</span>
+                                </div>
+                                <button onClick={onSelectMasterBackup} className="text-xs bg-bgSecondary border border-borderColor px-3 py-1.5 rounded hover:border-[var(--accent-color-light)]">Select Folder</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- APP ---
+        function App() {
+            // --- State ---
+            const [projects, setProjects] = useLocalStorage(LOCAL_STORAGE_KEYS.PROJECTS, []);
+            const [sections, setSections] = useLocalStorage(LOCAL_STORAGE_KEYS.SECTIONS, []);
+            const [categoryLabels, setCategoryLabels] = useLocalStorage(LOCAL_STORAGE_KEYS.CATEGORY_LABELS, DEFAULT_CATEGORY_LABELS);
+            const [globalColor, setGlobalColor] = useLocalStorage(LOCAL_STORAGE_KEYS.GLOBAL_COLOR, DEFAULT_GLOBAL_COLOR);
+            const [backgroundColor, setBackgroundColor] = useLocalStorage(LOCAL_STORAGE_KEYS.BACKGROUND_COLOR, DEFAULT_BACKGROUND_COLOR);
+            const [activeWorkArea, setActiveWorkArea] = useLocalStorage(LOCAL_STORAGE_KEYS.WORK_AREA, 'current');
+            const [websiteName, setWebsiteName] = useLocalStorage(LOCAL_STORAGE_KEYS.WEBSITE_NAME, DEFAULT_WEBSITE_NAME);
+            const [expansionState, setExpansionState] = useLocalStorage(LOCAL_STORAGE_KEYS.EXPANSION_STATE, {});
+            
+            const [accentColorHistory, setAccentColorHistory] = useLocalStorage(LOCAL_STORAGE_KEYS.ACCENT_COLOR_HISTORY, []);
+            const [backgroundColorHistory, setBackgroundColorHistory] = useLocalStorage(LOCAL_STORAGE_KEYS.BACKGROUND_COLOR_HISTORY, []);
+
+            // UI State
+            const [currentPage, setCurrentPage] = useState('main');
+            const [modal, setModal] = useState(null);
+            const [selectedProject, setSelectedProject] = useState(null);
+            const [selectedLog, setSelectedLog] = useState(null);
+            const [logToDelete, setLogToDelete] = useState(null);
+            const [importPreviewData, setImportPreviewData] = useState(null);
+            
+            // Timer State
+            const [activeTimer, setActiveTimer] = useState(null);
+            const [elapsedTime, setElapsedTime] = useState(0);
+            const timerIntervalRef = useRef(null);
+            const [isTimerDropdownOpen, setIsTimerDropdownOpen] = useState(false);
+            const timerDropdownRef = useRef(null);
+
+            // Filter/Sort State
+            const [sortCriteria, setSortCriteria] = useState('newest');
+            const [searchCriteria, setSearchCriteria] = useState(null);
+
+            // Calendar State
+            const [calendarView, setCalendarView] = useState('month');
+            const [selectedCalendarDate, setSelectedCalendarDate] = useState(null);
+            const [scrollToTime, setScrollToTime] = useState(null);
+            const dayViewScrollTopRef = useRef(0);
+
+            const [isConfirmingSave, setIsConfirmingSave] = useState(false);
+
+            // Backup State
+            const [runningBackupHandle, setRunningBackupHandle] = useState(null);
+            const [masterBackupHandle, setMasterBackupHandle] = useState(null);
+            const autoSaveTimeoutRef = useRef(null);
+
+            // --- Effects ---
+            
+            // Initialize File System Handles
+            useEffect(() => {
+                const loadHandles = async () => {
+                    try {
+                        const running = await getDirectoryHandle('running-backup');
+                        if (running) setRunningBackupHandle(running);
+                        const master = await getDirectoryHandle('master-backup');
+                        if (master) setMasterBackupHandle(master);
+                    } catch (e) {
+                        console.error("Failed to load directory handles", e);
+                    }
+                };
+                loadHandles();
+            }, []);
+
+            // Auto-Save Effect
+            useEffect(() => {
+                if ((!runningBackupHandle && !masterBackupHandle) || projects.length === 0) return;
+
+                if (autoSaveTimeoutRef.current) clearTimeout(autoSaveTimeoutRef.current);
+
+                autoSaveTimeoutRef.current = window.setTimeout(async () => {
+                    const fullData = JSON.stringify({
+                        projects, sections, categoryLabels, globalColor, backgroundColor, websiteName, accentColorHistory, backgroundColorHistory
+                    }, null, 2);
+
+                    // Save Running Backup (Timestamped)
+                    if (runningBackupHandle) {
+                        const hasPerm = await verifyPermission(runningBackupHandle, true);
+                        if (hasPerm) {
+                            const now = new Date();
+                            const timestamp = now.toISOString().replace(/[:.]/g, '-').replace('T', '_').split('Z')[0];
+                            const filename = `ProjectTimer_Backup_${timestamp}.json`;
+                            await saveFileToFolder(runningBackupHandle, filename, fullData);
+                        }
+                    }
+
+                    // Save Master Backup (Overwrite)
+                    if (masterBackupHandle) {
+                        const hasPerm = await verifyPermission(masterBackupHandle, true);
+                        if (hasPerm) {
+                            await saveFileToFolder(masterBackupHandle, "Timer Master Backup.json", fullData);
+                        }
+                    }
+                    
+                    setIsConfirmingSave(true); 
+                    setTimeout(() => setIsConfirmingSave(false), 2000);
+
+                }, 2000); // 2 second debounce
+
+                return () => {
+                    if (autoSaveTimeoutRef.current) clearTimeout(autoSaveTimeoutRef.current);
+                };
+            }, [
+                projects, sections, categoryLabels, globalColor, backgroundColor, websiteName, 
+                runningBackupHandle, masterBackupHandle
+            ]);
+
+            useEffect(() => {
+                document.title = websiteName;
+                const root = document.documentElement;
+                root.style.setProperty('--accent-color-primary', globalColor);
+                
+                const rgb = hexToRgb(globalColor);
+                if (rgb) {
+                    root.style.setProperty('--accent-color-light', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.8)`);
+                    root.style.setProperty('--accent-color-dark', `rgba(${Math.max(0, rgb.r - 40)}, ${Math.max(0, rgb.g - 40)}, ${Math.max(0, rgb.b - 40)}, 1)`);
+                }
+            }, [websiteName, globalColor, backgroundColor]);
+
+            useEffect(() => {
+                if (activeTimer) {
+                    timerIntervalRef.current = window.setInterval(() => {
+                        setElapsedTime(Math.floor((Date.now() - activeTimer.startTime) / 1000));
+                    }, 1000);
+                } else {
+                    setElapsedTime(0);
+                    if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+                }
+                return () => { if (timerIntervalRef.current) clearInterval(timerIntervalRef.current); };
+            }, [activeTimer]);
+
+            useEffect(() => {
+                const handleClickOutside = (event) => {
+                    if (timerDropdownRef.current && !timerDropdownRef.current.contains(event.target)) {
+                        setIsTimerDropdownOpen(false);
+                    }
+                };
+                document.addEventListener('mousedown', handleClickOutside);
+                return () => {
+                    document.removeEventListener('mousedown', handleClickOutside);
+                };
+            }, []);
+
+            // --- Handlers ---
+            const handleStartTimer = (projectId) => {
+                if (activeTimer) handleStopTimer();
+                setActiveTimer({ projectId, startTime: Date.now() });
+            };
+
+            const handleStopTimer = () => {
+                if (!activeTimer) return;
+                const project = projects.find(p => p.id === activeTimer.projectId);
+                if (project) {
+                    const endTime = new Date().toISOString();
+                    const startTime = new Date(activeTimer.startTime).toISOString();
+                    const duration = Math.floor((Date.now() - activeTimer.startTime) / 1000);
+                    if (duration > 0) {
+                        handleAddOrUpdateLog(project.id, {
+                            id: Date.now(),
+                            date: startTime,
+                            method: 'timer',
+                            startTime,
+                            endTime,
+                            duration,
+                            logText: ''
+                        });
+                    }
+                }
+                setActiveTimer(null);
+            };
+
+            const handleAddOrUpdateLog = (projectId, logEntry) => {
+                setProjects(prev => prev.map(p => {
+                    if (p.id === projectId) {
+                        const exists = p.logs.findIndex(l => l.id === logEntry.id);
+                        const newLogs = exists > -1 ? p.logs.map(l => l.id === logEntry.id ? logEntry : l) : [...p.logs, logEntry];
+                        const timeSpent = newLogs.reduce((acc, l) => acc + l.duration, 0);
+                        return { ...p, logs: newLogs, timeSpent };
+                    }
+                    return p;
+                }));
+            };
+
+            const handleAddOrUpdateProject = (project) => {
+                setProjects(prev => {
+                    const idx = prev.findIndex(p => p.id === project.id);
+                    return idx > -1 ? prev.map(p => p.id === project.id ? project : p) : [...prev, project];
+                });
+            };
+
+            const handleDeleteProject = (id) => {
+                setProjects(prev => prev.filter(p => p.id !== id));
+                setModal(null);
+            };
+
+            const handleDeleteLog = (projectId, logId) => {
+                setProjects(prev => prev.map(p => {
+                    if (p.id === projectId) {
+                        const newLogs = p.logs.filter(l => l.id !== logId);
+                        return { ...p, logs: newLogs, timeSpent: newLogs.reduce((acc, l) => acc + l.duration, 0) };
+                    }
+                    return p;
+                }));
+                setModal(null);
+            };
+
+            const handleExport = () => {
+                const data = JSON.stringify({
+                    projects, sections, categoryLabels, globalColor, backgroundColor, websiteName, accentColorHistory, backgroundColorHistory
+                }, null, 2);
+                const blob = new Blob([data], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `project_timer_backup_${new Date().toISOString().split('T')[0]}.json`;
+                a.click();
+                setModal(null);
+            };
+
+            const handleImport = (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    try {
+                        const data = JSON.parse(ev.target?.result);
+                        setImportPreviewData(data);
+                        setModal('importPreview');
+                    } catch (err) {
+                        alert('Invalid backup file');
+                    }
+                };
+                reader.readAsText(file);
+                e.target.value = ''; // Reset input
+            };
+
+            const handleConfirmImport = (selections) => {
+                if (!importPreviewData) return;
+                if (selections.websiteName && importPreviewData.websiteName) setWebsiteName(importPreviewData.websiteName);
+                if (selections.categoryLabels && importPreviewData.categoryLabels) setCategoryLabels(importPreviewData.categoryLabels);
+                if (selections.appearance) {
+                    if (importPreviewData.globalColor) setGlobalColor(importPreviewData.globalColor);
+                    if (importPreviewData.backgroundColor) setBackgroundColor(importPreviewData.backgroundColor);
+                }
+                if (selections.selectedProjectIds.size > 0 && importPreviewData.projects) {
+                    const newProjs = importPreviewData.projects.filter(p => selections.selectedProjectIds.has(p.id)).map((p, i) => ({
+                        ...p, id: Date.now() + i // Avoid ID collisions
+                    }));
+                    setProjects(prev => [...prev, ...newProjs]);
+                    const newSections = new Set([...sections, ...newProjs.map(p => p.section)]);
+                    setSections(Array.from(newSections));
+                }
+                setModal(null);
+                setImportPreviewData(null);
+            };
+
+            const handleClearAll = () => {
+                setProjects([]);
+                setSections([]);
+                setCategoryLabels(DEFAULT_CATEGORY_LABELS);
+                setGlobalColor(DEFAULT_GLOBAL_COLOR);
+                setBackgroundColor(DEFAULT_BACKGROUND_COLOR);
+                setWebsiteName(DEFAULT_WEBSITE_NAME);
+                setModal(null);
+                setCurrentPage('main');
+            };
+
+            const handleSelectRunningBackup = async () => {
+                if (typeof window.showDirectoryPicker !== 'function') {
+                    alert("Your browser does not support automatic local backups (File System Access API). Please use a Chromium-based browser like Chrome, Edge, or Opera.");
+                    return;
+                }
+                try {
+                    const handle = await window.showDirectoryPicker();
+                    if (handle) {
+                        setRunningBackupHandle(handle);
+                        await storeDirectoryHandle('running-backup', handle);
+                    }
+                } catch (e) {
+                    if (e.name !== 'AbortError') {
+                        console.error("Directory selection error:", e);
+                        if (e.message && e.message.includes('Cross origin sub frames')) {
+                            alert("Automatic backups cannot be enabled in this preview environment (iframe). Please open the application in a full window or deploy it to use this feature.");
+                        } else {
+                            alert("Could not select folder: " + e.message);
+                        }
+                    }
+                }
+            };
+
+            const handleSelectMasterBackup = async () => {
+                if (typeof window.showDirectoryPicker !== 'function') {
+                    alert("Your browser does not support automatic local backups (File System Access API). Please use a Chromium-based browser like Chrome, Edge, or Opera.");
+                    return;
+                }
+                try {
+                    const handle = await window.showDirectoryPicker();
+                    if (handle) {
+                        setMasterBackupHandle(handle);
+                        await storeDirectoryHandle('master-backup', handle);
+                    }
+                } catch (e) {
+                    if (e.name !== 'AbortError') {
+                        console.error("Directory selection error:", e);
+                        if (e.message && e.message.includes('Cross origin sub frames')) {
+                            alert("Automatic backups cannot be enabled in this preview environment (iframe). Please open the application in a full window or deploy it to use this feature.");
+                        } else {
+                            alert("Could not select folder: " + e.message);
+                        }
+                    }
+                }
+            };
+
+            const handleQuickStart = (project) => {
+                const section = project.section || 'Uncategorized';
+                const subsection = project.subsection || 'General';
+                setExpansionState((prev) => {
+                    const newState = JSON.parse(JSON.stringify(prev));
+                    if (!newState[section]) newState[section] = {};
+                    newState[section].__isOpen = true;
+                    newState[section][subsection] = true;
+                    return newState;
+                });
+
+                handleStartTimer(project.id);
+                setIsTimerDropdownOpen(false);
+
+                setTimeout(() => {
+                    const el = document.getElementById(`project-item-${project.id}`);
+                    if (el) {
+                        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        el.classList.add('ring-2', 'ring-[var(--accent-color-primary)]');
+                        setTimeout(() => el.classList.remove('ring-2', 'ring-[var(--accent-color-primary)]'), 2000);
+                    }
+                }, 100);
+            };
+
+            const focusOnProject = (projectId, logId) => {
+                const project = projects.find(p => p.id === projectId);
+                if (!project) return;
+
+                if (project.status !== activeWorkArea) {
+                    setActiveWorkArea(project.status);
+                }
+
+                const section = project.section || 'Uncategorized';
+                const subsection = project.subsection || 'General';
+                setExpansionState((prev) => {
+                    const newState = JSON.parse(JSON.stringify(prev));
+                    if (!newState[section]) newState[section] = {};
+                    newState[section].__isOpen = true;
+                    newState[section][subsection] = true;
+                    return newState;
+                });
+
+                if (!project.isExpanded) {
+                    handleAddOrUpdateProject({ ...project, isExpanded: true });
+                }
+
+                setTimeout(() => {
+                    let targetId = `project-item-${projectId}`;
+                    if (logId) {
+                        const logEl = document.getElementById(`log-item-${logId}`);
+                        if (logEl) targetId = `log-item-${logId}`;
+                    }
+
+                    const el = document.getElementById(targetId) || document.getElementById(`project-item-${projectId}`);
+                    
+                    if (el) {
+                        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        el.classList.add('ring-2', 'ring-[var(--accent-color-primary)]');
+                        setTimeout(() => el.classList.remove('ring-2', 'ring-[var(--accent-color-primary)]'), 2000);
+                    }
+                }, 400); 
+            };
+
+            // --- Derived State ---
+            const activeProjectName = useMemo(() => {
+                return projects.find(p => p.id === activeTimer?.projectId)?.name || 'Unknown Project';
+            }, [activeTimer, projects]);
+
+            const filteredProjects = useMemo(() => {
+                let list = projects.filter(p => p.status === activeWorkArea);
+                return list.sort((a, b) => {
+                    if (sortCriteria === 'newest') return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+                    if (sortCriteria === 'oldest') return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+                    if (sortCriteria === 'nameAsc') return a.name.localeCompare(b.name);
+                    if (sortCriteria === 'timeSpent') return b.timeSpent - a.timeSpent;
+                    return 0;
+                });
+            }, [projects, activeWorkArea, sortCriteria, searchCriteria]);
+
+            return (
+                <div className="flex flex-col h-screen max-w-[1600px] mx-auto px-6 py-4" style={{ backgroundColor }}>
+                    {currentPage === 'main' ? (
+                        <>
+                            <Header 
+                                websiteName={websiteName}
+                                onAddProject={() => { setSelectedProject(null); setModal('editProject'); }}
+                                onSettings={() => setCurrentPage('settings')}
+                                onSearch={() => alert("Search functionality simplified for this demo.")}
+                                searchCriteria={null}
+                                onClearSearch={() => setSearchCriteria(null)}
+                                sortCriteria={sortCriteria}
+                                setSortCriteria={setSortCriteria}
+                                activeWorkArea={activeWorkArea}
+                                setActiveWorkArea={setActiveWorkArea}
+                                onConfirmSave={() => { setIsConfirmingSave(true); setTimeout(() => setIsConfirmingSave(false), 2000); }}
+                                isConfirmingSave={isConfirmingSave}
+                            />
+                            
+                            <div className="flex flex-col lg:flex-row gap-6 h-full overflow-hidden mt-2">
+                                <div className="flex-1 flex flex-col min-w-0">
+                                    <div className="relative mb-4" ref={timerDropdownRef}>
+                                        <div 
+                                            className={`rounded-lg border border-borderColor p-4 flex justify-between items-center transition-all ${activeTimer ? 'bg-bgSecondary' : 'bg-bgSecondary/50 hover:border-[var(--accent-color-light)] cursor-pointer'}`}
+                                            onClick={() => !activeTimer && setIsTimerDropdownOpen(!isTimerDropdownOpen)}
+                                        >
+                                            {!activeTimer ? (
+                                                <span className="text-textSecondary mx-auto font-medium">Click to start a timer</span>
+                                            ) : (
+                                                <>
+                                                    <div className="flex flex-col min-w-0 mr-4">
+                                                        <span className="text-xs text-textSecondary uppercase tracking-wider">Active Timer</span>
+                                                        <span className="font-bold text-[var(--accent-color-light)] truncate" title={activeProjectName}>{activeProjectName}</span>
+                                                    </div>
+                                                    <div className="flex items-center gap-4 shrink-0">
+                                                        <span className="font-mono text-xl">{formatTime(elapsedTime)}</span>
+                                                        <button onClick={(e) => { e.stopPropagation(); handleStopTimer(); }} className="bg-red-500 hover:bg-red-600 text-white px-4 py-1 rounded font-medium text-sm">Stop</button>
+                                                    </div>
+                                                </>
+                                            )}
+                                        </div>
+                                        
+                                        {isTimerDropdownOpen && !activeTimer && (
+                                            <div className="absolute top-full left-0 right-0 mt-2 bg-bgSecondary border border-borderColor rounded-lg shadow-xl z-20 max-h-[300px] overflow-y-auto custom-scrollbar animate-[fadeIn_0.2s]">
+                                                {filteredProjects.length > 0 ? filteredProjects.map(p => (
+                                                    <div 
+                                                        key={p.id}
+                                                        onClick={() => handleQuickStart(p)}
+                                                        className="p-3 hover:bg-white/5 cursor-pointer border-b border-borderColor last:border-0 flex justify-between items-center group"
+                                                    >
+                                                        <div className="flex flex-col">
+                                                            <span className="font-medium text-textPrimary group-hover:text-[var(--accent-color-light)] transition-colors">{p.name}</span>
+                                                            <span className="text-xs text-textSecondary">{p.section} {p.subsection ? `/ ${p.subsection}` : ''}</span>
+                                                        </div>
+                                                        <span className="text-xs font-mono text-textSecondary">{formatTime(p.timeSpent)}</span>
+                                                    </div>
+                                                )) : (
+                                                    <div className="p-4 text-center text-textSecondary">No projects found in this view.</div>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
+                                        <ProjectList 
+                                            projects={filteredProjects}
+                                            categoryLabels={categoryLabels}
+                                            expansionState={expansionState}
+                                            setExpansionState={setExpansionState}
+                                            onDelete={id => { setSelectedProject(projects.find(p=>p.id===id)||null); setModal('deleteProject'); }}
+                                            onEdit={p => { setSelectedProject(p); setModal('editProject'); }}
+                                            onAddTime={p => { setSelectedProject(p); setModal('manualTime'); }}
+                                            onToggleExpand={id => handleAddOrUpdateProject({...projects.find(p=>p.id===id), isExpanded: !projects.find(p=>p.id===id).isExpanded})}
+                                            onUpdateColor={(id, c) => handleAddOrUpdateProject({...projects.find(p=>p.id===id), color: c})}
+                                            onDeleteLog={(pid, lid) => { setLogToDelete({projectId: pid, logId: lid}); setModal('deleteLog'); }}
+                                            onEditLog={(pid, log) => { setSelectedProject(projects.find(p=>p.id===pid)); setSelectedLog(log); setModal('manualTime'); }}
+                                            onMoveProject={(id, st) => handleAddOrUpdateProject({...projects.find(p=>p.id===id), status: st})}
+                                            activeTimer={activeTimer}
+                                            elapsedTime={elapsedTime}
+                                            onStartTimer={handleStartTimer}
+                                            onStopTimer={handleStopTimer}
+                                            onLogItemClick={(log) => { setCalendarView('day'); setSelectedCalendarDate(new Date(log.date)); setScrollToTime(log.startTime); }}
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="w-full lg:w-[450px] shrink-0 h-[400px] lg:h-full">
+                                    <Calendar 
+                                        projects={projects}
+                                        onLogClick={(pid, lid) => focusOnProject(pid, lid)}
+                                        dayViewScrollTopRef={dayViewScrollTopRef}
+                                        view={calendarView}
+                                        setView={setCalendarView}
+                                        selectedDate={selectedCalendarDate}
+                                        setSelectedDate={setSelectedCalendarDate}
+                                        scrollToTime={scrollToTime}
+                                        setScrollToTime={setScrollToTime}
+                                    />
+                                </div>
+                            </div>
+                        </>
+                    ) : (
+                        <div className="flex-1 overflow-y-auto custom-scrollbar">
+                            <SettingsPage 
+                                onBack={() => setCurrentPage('main')}
+                                websiteName={websiteName}
+                                setWebsiteName={setWebsiteName}
+                                categoryLabels={categoryLabels}
+                                setCategoryLabels={setCategoryLabels}
+                                onExport={() => setModal('export')}
+                                onImport={handleImport}
+                                onClear={() => setModal('clearAll')}
+                                globalColor={globalColor}
+                                setGlobalColor={setGlobalColor}
+                                backgroundColor={backgroundColor}
+                                setBackgroundColor={setBackgroundColor}
+                                accentColorHistory={accentColorHistory}
+                                setAccentColorHistory={setAccentColorHistory}
+                                backgroundColorHistory={backgroundColorHistory}
+                                setBackgroundColorHistory={setBackgroundColorHistory}
+                                onSelectRunningBackup={handleSelectRunningBackup}
+                                onSelectMasterBackup={handleSelectMasterBackup}
+                                runningBackupName={runningBackupHandle ? runningBackupHandle.name : null}
+                                masterBackupName={masterBackupHandle ? masterBackupHandle.name : null}
+                            />
+                        </div>
+                    )}
+
+                    {modal === 'editProject' && (
+                        <EditProjectModal 
+                            project={selectedProject} 
+                            onSave={handleAddOrUpdateProject} 
+                            onClose={() => setModal(null)} 
+                            sections={sections} 
+                            setSections={setSections} 
+                            categoryLabels={categoryLabels} 
+                            allProjects={projects} 
+                        />
+                    )}
+                    {modal === 'manualTime' && selectedProject && (
+                        <ManualTimeEntryModal 
+                            project={selectedProject} 
+                            logToEdit={selectedLog} 
+                            onSave={handleAddOrUpdateLog} 
+                            onClose={() => { setModal(null); setSelectedLog(null); }} 
+                        />
+                    )}
+                    {modal === 'deleteProject' && selectedProject && (
+                        <ConfirmModal 
+                            title="Delete Project" 
+                            message={<p>Are you sure you want to delete <strong>{selectedProject.name}</strong>?</p>} 
+                            onConfirm={() => handleDeleteProject(selectedProject.id)} 
+                            onCancel={() => setModal(null)} 
+                            isDanger 
+                        />
+                    )}
+                    {modal === 'deleteLog' && logToDelete && (
+                        <ConfirmModal 
+                            title="Delete Log" 
+                            message="Are you sure you want to delete this time entry?" 
+                            onConfirm={() => handleDeleteLog(logToDelete.projectId, logToDelete.logId)} 
+                            onCancel={() => setModal(null)} 
+                            isDanger 
+                        />
+                    )}
+                    {modal === 'clearAll' && (
+                        <ConfirmModal 
+                            title="Clear All Data" 
+                            message="Are you sure? This will delete all projects and settings permanently." 
+                            onConfirm={handleClearAll} 
+                            onCancel={() => setModal(null)} 
+                            isDanger 
+                        />
+                    )}
+                    {modal === 'export' && (
+                        <ConfirmModal 
+                            title="Export Data"
+                            message="Download a backup of your data?"
+                            onConfirm={handleExport}
+                            onCancel={() => setModal(null)}
+                        />
+                    )}
+                    {modal === 'importPreview' && importPreviewData && (
+                        <ImportPreviewModal 
+                            data={importPreviewData} 
+                            onClose={() => { setModal(null); setImportPreviewData(null); }} 
+                            onConfirm={handleConfirmImport} 
+                        />
+                    )}
+                </div>
+            );
+        }
+
+        const rootElement = document.getElementById('root');
+        const root = ReactDOM.createRoot(rootElement);
+        root.render(
+            <React.StrictMode>
+                <App />
+            </React.StrictMode>
+        );
+    </script>
+<script type="module" src="/index.tsx"></script>
+</body>
+</html>
